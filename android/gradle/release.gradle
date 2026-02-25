@@ -1,3 +1,9 @@
-apply from: rootProject.file('gradle/android_tasks.gradle')
+def _requestedTasks = gradle.startParameter.taskNames.collect { it.toLowerCase() }
+def _enablePublishing = _requestedTasks.any {
+    it.contains('publish') || it.contains('upload') || it.contains('install')
+}
 
-apply plugin: 'com.vanniktech.maven.publish'
+if (_enablePublishing) {
+    apply from: rootProject.file('gradle/android_tasks.gradle')
+    apply plugin: 'com.vanniktech.maven.publish'
+}

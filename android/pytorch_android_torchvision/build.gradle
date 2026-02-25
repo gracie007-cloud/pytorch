@@ -1,9 +1,11 @@
 apply plugin: 'com.android.library'
-apply plugin: 'maven'
+
+def androidCompileSdk = rootProject.hasProperty("compileSdkVersion") ? rootProject.compileSdkVersion : 28
+def androidBuildTools = rootProject.hasProperty("buildToolsVersion") ? rootProject.buildToolsVersion : "28.0.3"
 
 android {
-    compileSdkVersion rootProject.compileSdkVersion
-    buildToolsVersion rootProject.buildToolsVersion
+    compileSdkVersion androidCompileSdk
+    buildToolsVersion androidBuildTools
 
 
     defaultConfig {
@@ -58,7 +60,12 @@ apply from: rootProject.file('gradle/release.gradle')
 
 task sourcesJar(type: Jar) {
     from android.sourceSets.main.java.srcDirs
-    classifier = 'sources'
+    def jarTask = delegate
+    if (jarTask.hasProperty('archiveClassifier')) {
+        jarTask.archiveClassifier.set('sources')
+    } else {
+        jarTask.classifier = 'sources'
+    }
 }
 
 artifacts.add('archives', sourcesJar)
