@@ -379,6 +379,31 @@ class TestTransformers(NNTestCase):
             # of NaNs for fully masked rows
             self.assertEqual(out, out_fp.nan_to_num())
 
+    @onlyCUDA
+    def test_multiheadattention_fastpath_fp16_head_dim_alignment(self, device):
+        previous_fastpath = torch.backends.mha.get_fastpath_enabled()
+        try:
+            torch.manual_seed(0)
+            mha = nn.MultiheadAttention(
+                96,
+                16,
+                dropout=0.2,
+                batch_first=True,
+                dtype=torch.float16,
+                device=device,
+            )
+            x = torch.randn(8, 32, 96, device=device, dtype=torch.float16) * 238.15560380049612
+            with torch.no_grad():
+                torch.backends.mha.set_fastpath_enabled(True)
+                mha.eval()
+                out, _ = mha(x, x, x, need_weights=False)
+                torch.backends.mha.set_fastpath_enabled(False)
+                out_ref, _ = mha(x, x, x, need_weights=False)
+            self.assertTrue(torch.isfinite(out).all())
+            self.assertEqual(out, out_ref, atol=2e-2, rtol=8e-2)
+        finally:
+            torch.backends.mha.set_fastpath_enabled(previous_fastpath)
+
     @parametrize("nhead", [1, 4, 8])
     def test_transformerencoderlayer_src_mask(self, device, nhead):
         batch_size = 2
@@ -2973,6 +2998,32 @@ class TestSDPACudaOnly(NNTestCase):
         for permute_order in permute_orders:
             for use_compile in [False, True]:
                 test_attention(SDPBackend.CUDNN_ATTENTION, list(permute_order) + [3], use_compile)
+
+    @unittest.skipIf(not PLATFORM_SUPPORTS_CUDNN_ATTENTION, "cudnn Attention is not supported on this system")
+    @parametrize("dtype", [torch.float16, torch.bfloat16])
+    def test_cudnn_attention_broadcast_stride_zero(self, device, dtype):
+        # Regression test: Q/K/V with zero strides (broadcast via as_strided)
+        # caused alloc_with_matching_layout to produce output with stride[-1] != 1,
+        # which cuDNN Frontend rejects.
+        N, n_head, L, S, E, Ev = 8, 2, 64, 16, 128, 64
+        q = torch.randn(N, n_head, L, E, dtype=dtype, device=device)
+        k = torch.randn(N, n_head, S, E, dtype=dtype, device=device)
+        v = torch.randn(N, n_head, S, Ev, dtype=dtype, device=device)
+
+        q_bc = torch.as_strided(q, size=q.shape, stride=(0, 0, E, 1))
+        k_bc = torch.as_strided(k, size=k.shape, stride=(0, 0, E, 1))
+        v_bc = torch.as_strided(v, size=v.shape, stride=(0, 0, Ev, 1))
+
+        with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
+            out = F.scaled_dot_product_attention(q_bc, k_bc, v_bc, is_causal=True)
+
+        self.assertEqual(out.shape, (N, n_head, L, Ev))
+        self.assertEqual(out.stride(-1), 1)
+
+        out_ref = F.scaled_dot_product_attention(
+            q_bc.contiguous(), k_bc.contiguous(), v_bc.contiguous(), is_causal=True
+        )
+        torch.testing.assert_close(out, out_ref, atol=3e-3, rtol=3e-3)
 
     @unittest.skipIf(not PLATFORM_SUPPORTS_CUDNN_ATTENTION, "cudnn Attention is not supported on this system")
     @unittest.skipIf(
